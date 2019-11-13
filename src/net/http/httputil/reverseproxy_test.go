@@ -1075,7 +1075,8 @@ func TestSelectFlushInterval(t *testing.T) {
 	}
 }
 
-func TestReverseProxyWebSocket(t *testing.T) {
+func TestReverseProxyWebSocketCancelation(t *testing.T) {
+	backendEnd := "backendEnd"
 	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if upgradeType(r.Header) != "websocket" {
 			t.Error("unexpected backend request")
@@ -1094,7 +1095,13 @@ func TestReverseProxyWebSocket(t *testing.T) {
 			t.Errorf("backend failed to read line from client: %v", bs.Err())
 			return
 		}
-		fmt.Fprintf(c, "backend got %q\n", bs.Text())
+
+		for i := 0; i < 5; i++ {
+			fmt.Fprintf(c, "backend i=%d\n", i)
+			time.Sleep(time.Second)
+		}
+		fmt.Fprintln(c, backendEnd)
+		t.Error("Backend has not been closed")
 	}))
 	defer backendServer.Close()
 
@@ -1106,9 +1113,16 @@ func TestReverseProxyWebSocket(t *testing.T) {
 		return nil
 	}
 
+	triggerCancel := make(chan interface{})
 	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.Header().Set("X-Header", "X-Value")
-		rproxy.ServeHTTP(rw, req)
+		ctx, cancel := context.WithCancel(req.Context())
+		go func() {
+			<-triggerCancel
+			fmt.Printf("cancel\n")
+			cancel()
+		}()
+		rproxy.ServeHTTP(rw, req.WithContext(ctx))
 	})
 
 	frontendProxy := httptest.NewServer(handler)
@@ -1120,6 +1134,7 @@ func TestReverseProxyWebSocket(t *testing.T) {
 
 	c := frontendProxy.Client()
 	res, err := c.Do(req)
+	close(triggerCancel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1148,13 +1163,18 @@ func TestReverseProxyWebSocket(t *testing.T) {
 
 	io.WriteString(rwc, "Hello\n")
 	bs := bufio.NewScanner(rwc)
-	if !bs.Scan() {
-		t.Fatalf("Scan: %v", bs.Err())
-	}
-	got = bs.Text()
-	want = `backend got "Hello"`
-	if got != want {
-		t.Errorf("got %#q, want %#q", got, want)
+	for {
+		ok := bs.Scan()
+		if ok {
+			got = bs.Text()
+			fmt.Printf("got=%v\n", got)
+			if got == backendEnd {
+				t.Fatalf("Got end marker from the backend, the websocket was not properly canceled")
+			}
+		} else {
+			fmt.Printf("err %+v\n", bs.Err())
+			break
+		}
 	}
 }
 
