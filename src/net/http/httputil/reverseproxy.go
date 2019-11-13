@@ -518,6 +518,14 @@ func (p *ReverseProxy) handleUpgradeResponse(rw http.ResponseWriter, req *http.R
 		p.getErrorHandler()(rw, req, fmt.Errorf("internal error: 101 switching protocols response with non-writable body"))
 		return
 	}
+	go func() {
+		select {
+		case <-req.Context().Done():
+			fmt.Printf("Proxy Done!\n")
+			backConn.Close()
+		}
+	}()
+
 	defer backConn.Close()
 	conn, brw, err := hj.Hijack()
 	if err != nil {
